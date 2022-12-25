@@ -29,6 +29,8 @@
 #include "main.h"
 
 #include <algorithm>
+#include <iostream>
+#include <vector>
 
 #include "e_checks.h"
 #include "e_cutpaste.h"
@@ -256,6 +258,92 @@ CheckResult UI_Check_base::Run()
 
 
 //------------------------------------------------------------------------
+
+// Don't check sectors, or things related to sectors, that contain things that
+// are this type.
+// TODO: Allow override somehow.
+const int DONT_CHECK = 1234;
+
+std::unordered_set<int> unchecked_sectors;
+std::unordered_set<int> unchecked_sidedefs;
+std::unordered_set<int> unchecked_things;
+
+static void findUnchecked(const Instance &inst)
+{
+	unchecked_sectors.clear();
+	unchecked_sidedefs.clear();
+	unchecked_things.clear();
+
+	// First find the sectors that contain things with type DONT_CHECK.
+	const Document &level = inst.level;
+	for (int n = 0; n < level.numThings(); n++)
+	{
+		const Thing* thing = level.things[n];
+		if (thing->type != DONT_CHECK)
+			continue;
+		const v2double_t pos = thing->xy();
+		const Objid sector = hover::getNearestSector(level, pos);
+		if (sector.is_nil())
+		{
+			std::cerr << "Unable to find unchecked sector for thing #" << n << std::endl;
+			continue;
+		}
+		unchecked_sectors.insert(sector.num);
+	}
+
+	// If there are no uncheked sectors then there is nothing more to do.
+	if (unchecked_sectors.empty())
+	{
+		std::cout << "No unchecked sectors. No checks will be suppressed." << std::endl;
+		return;
+	}
+
+	// For each unchecked sector find the sidedefs.
+	for (int n = 0; n < level.numSidedefs(); n++)
+		if (unchecked_sectors.count(level.sidedefs[n]->sector))
+			unchecked_sidedefs.insert(n);
+
+	// The things are in the sectors already found, so this like the first loop.
+	for (int n = 0; n < level.numThings(); n++)
+	{
+		const Thing* thing = level.things[n];
+		const v2double_t pos = thing->xy();
+		const Objid sector = hover::getNearestSector(level, pos);
+		if (sector.is_nil())
+			continue;
+		if (unchecked_sectors.count(sector.num))
+			unchecked_things.insert(n);
+	}
+
+	// Log the above.
+	// TODO: Debug logging of some sort instead?
+	std::vector<int> sorted_items;
+	sorted_items.insert(sorted_items.end(),
+		unchecked_sectors.begin(), unchecked_sectors.end());
+	std::sort(sorted_items.begin(), sorted_items.end());
+	std::cout << "Unchecked sectors :";
+	for (int& sector_num: sorted_items)
+		std::cout << " " << sector_num;
+    std::cout << std::endl;
+
+    sorted_items.clear();
+    sorted_items.insert(sorted_items.end(),
+		unchecked_sidedefs.begin(), unchecked_sidedefs.end());
+	std::sort(sorted_items.begin(), sorted_items.end());
+	std::cout << "Unchecked sidedefs:";
+	for (int& sidedef_num: sorted_items)
+		std::cout << " " << sidedef_num;
+    std::cout << std::endl;
+
+    sorted_items.clear();
+    sorted_items.insert(sorted_items.end(),
+		unchecked_things.begin(), unchecked_things.end());
+	std::sort(sorted_items.begin(), sorted_items.end());
+	std::cout << "Unchecked things  :";
+	for (int& thing_num: sorted_items)
+		std::cout << " " << thing_num;
+    std::cout << std::endl;
+}
 
 static void Vertex_FindDanglers(selection_c& sel, const Document &doc)
 {
@@ -1346,6 +1434,8 @@ void Things_FindUnknown(selection_c& list, std::map<int, int>& types, const Inst
 
 	for (int n = 0 ; n < inst.level.numThings() ; n++)
 	{
+		if (unchecked_things.count(n))
+			continue;
 		const thingtype_t &info = inst.conf.getThingType(inst.level.things[n]->type);
 
 		if (info.desc.startsWith("UNKNOWN"))
@@ -3453,7 +3543,6 @@ static void bump_unknown_name(std::map<SString, int>& list,
 	list[name] = count + 1;
 }
 
-
 static void Textures_FindMissing(const Instance &inst, selection_c& lines)
 {
 	lines.change_type(ObjType::linedefs);
@@ -3467,7 +3556,8 @@ static void Textures_FindMissing(const Instance &inst, selection_c& lines)
 
 		if (L->OneSided())
 		{
-			if (is_null_tex(L->Right(inst.level)->MidTex()))
+			if (is_null_tex(L->Right(inst.level)->MidTex())
+				&& !unchecked_sidedefs.count(L->right))
 				lines.set(n);
 		}
 		else  // Two Sided
@@ -3475,20 +3565,24 @@ static void Textures_FindMissing(const Instance &inst, selection_c& lines)
 			const Sector *front = L->Right(inst.level)->SecRef(inst.level);
 			const Sector *back  = L->Left(inst.level) ->SecRef(inst.level);
 
-			if (front->floorh < back->floorh && is_null_tex(L->Right(inst.level)->LowerTex()))
+			if (front->floorh < back->floorh && is_null_tex(L->Right(inst.level)->LowerTex())
+				&& !unchecked_sidedefs.count(L->right))
 				lines.set(n);
 
-			if (back->floorh < front->floorh && is_null_tex(L->Left(inst.level)->LowerTex()))
+			if (back->floorh < front->floorh && is_null_tex(L->Left(inst.level)->LowerTex())
+				&& !unchecked_sidedefs.count(L->left))
 				lines.set(n);
 
 			// missing uppers are OK when between two sky ceilings
 			if (inst.is_sky(front->CeilTex()) && inst.is_sky(back->CeilTex()))
 				continue;
 
-			if (front->ceilh > back->ceilh && is_null_tex(L->Right(inst.level)->UpperTex()))
+			if (front->ceilh > back->ceilh && is_null_tex(L->Right(inst.level)->UpperTex())
+				&& !unchecked_sidedefs.count(L->right))
 				lines.set(n);
 
-			if (back->ceilh > front->ceilh && is_null_tex(L->Left(inst.level)->UpperTex()))
+			if (back->ceilh > front->ceilh && is_null_tex(L->Left(inst.level)->UpperTex())
+				&& !unchecked_sidedefs.count(L->left))
 				lines.set(n);
 		}
 	}
@@ -3520,7 +3614,8 @@ static void Textures_FixMissing(Instance &inst)
 
 		if (L->OneSided())
 		{
-			if (is_null_tex(L->Right(inst.level)->MidTex()))
+			if (is_null_tex(L->Right(inst.level)->MidTex())
+				&& !unchecked_sidedefs.count(L->right))
 				op.changeSidedef(L->right, SideDef::F_MID_TEX, new_wall);
 		}
 		else  // Two Sided
@@ -3528,20 +3623,24 @@ static void Textures_FixMissing(Instance &inst)
 			const Sector *front = L->Right(inst.level)->SecRef(inst.level);
 			const Sector *back  = L->Left(inst.level) ->SecRef(inst.level);
 
-			if (front->floorh < back->floorh && is_null_tex(L->Right(inst.level)->LowerTex()))
+			if (front->floorh < back->floorh && is_null_tex(L->Right(inst.level)->LowerTex())
+				&& !unchecked_sidedefs.count(L->right))
 				op.changeSidedef(L->right, SideDef::F_LOWER_TEX, new_wall);
 
-			if (back->floorh < front->floorh && is_null_tex(L->Left(inst.level)->LowerTex()))
+			if (back->floorh < front->floorh && is_null_tex(L->Left(inst.level)->LowerTex())
+				&& !unchecked_sidedefs.count(L->left))
 				op.changeSidedef(L->left, SideDef::F_LOWER_TEX, new_wall);
 
 			// missing uppers are OK when between two sky ceilings
 			if (inst.is_sky(front->CeilTex()) && inst.is_sky(back->CeilTex()))
 				continue;
 
-			if (front->ceilh > back->ceilh && is_null_tex(L->Right(inst.level)->UpperTex()))
+			if (front->ceilh > back->ceilh && is_null_tex(L->Right(inst.level)->UpperTex())
+				&& !unchecked_sidedefs.count(L->right))
 				op.changeSidedef(L->right, SideDef::F_UPPER_TEX, new_wall);
 
-			if (back->ceilh > front->ceilh && is_null_tex(L->Left(inst.level)->UpperTex()))
+			if (back->ceilh > front->ceilh && is_null_tex(L->Left(inst.level)->UpperTex())
+				&& !unchecked_sidedefs.count(L->left))
 				op.changeSidedef(L->left, SideDef::F_UPPER_TEX, new_wall);
 		}
 	}
@@ -3725,8 +3824,10 @@ static void Textures_FindMedusa(selection_c& lines,
 		if (L->right < 0 || L->left < 0)
 			continue;
 
-		if (check_medusa(inst.wad, L->Right(inst.level)->MidTex(), names) |  /* plain OR */
-			check_medusa(inst.wad, L-> Left(inst.level)->MidTex(), names))
+		if ((check_medusa(inst.wad, L->Right(inst.level)->MidTex(), names)
+		    && !unchecked_sidedefs.count(L->right)) ||  /* plain OR, was bitwise OR */
+			(check_medusa(inst.wad, L-> Left(inst.level)->MidTex(), names)
+			&& !unchecked_sidedefs.count(L->left)))
 		{
 			lines.set(n);
 		}
@@ -3761,12 +3862,14 @@ static void Textures_RemoveMedusa(Instance &inst)
 		if (L->right < 0 || L->left < 0)
 			continue;
 
-		if (check_medusa(inst.wad, L->Right(inst.level)->MidTex(), names))
+		if (check_medusa(inst.wad, L->Right(inst.level)->MidTex(), names)
+			&& !unchecked_sidedefs.count(L->right))
 		{
 			op.changeSidedef(L->right, SideDef::F_MID_TEX, null_tex);
 		}
 
-		if (check_medusa(inst.wad, L-> Left(inst.level)->MidTex(), names))
+		if (check_medusa(inst.wad, L-> Left(inst.level)->MidTex(), names)
+			&& !unchecked_sidedefs.count(L->left))
 		{
 			op.changeSidedef(L->left, SideDef::F_MID_TEX, null_tex);
 		}
@@ -4376,7 +4479,6 @@ void ChecksModule::checkAll(bool major_stuff) const
 
 	CheckResult result;
 
-
 	result = checkVertices(min_severity);
 	if (result == CheckResult::highlight) return;
 	if (result != CheckResult::ok) no_worries = false;
@@ -4412,6 +4514,8 @@ void ChecksModule::checkAll(bool major_stuff) const
 
 void Instance::CMD_MapCheck()
 {
+	findUnchecked(*this);
+
 	SString what = EXEC_Param[0];
 
 	if (what.empty())
