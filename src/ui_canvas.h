@@ -99,6 +99,9 @@ public:
 	void DrawHighlight(int objtype, int objnum,
 	                   bool skip_lines = false, double dx=0, double dy=0);
 	void DrawHighlightTransform(int objtype, int objnum);
+	void GetMidpoint(const int objtype, const int objnum, double *midX, double *midY);
+	void DrawConnection(const int objtypeCause , const int objnumCause,
+						const int objtypeEffect, const int objnumEffect);
 	void DrawTagged(int objtype, int objnum);
 
 	// returns true if ok, false if box was very small

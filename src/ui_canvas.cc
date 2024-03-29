@@ -60,6 +60,18 @@ typedef enum
 
 } line_info_mode_e;
 
+// The level of highlighting.
+typedef enum
+{
+	HIGHLIGHT_Min = 0,
+	HIGHLIGHT_Normal,
+	HIGHLIGHT_Max
+} highlight_amount_e;
+highlight_amount_e highlight_amount = HIGHLIGHT_Normal;
+
+// Whether the following keys are pressed, updtaed by down and up events.
+bool shift_pressed   = false;
+bool control_pressed = false;
 
 // config items
 rgb_color_t dotty_axis_col  = RGB_MAKE(0, 128, 255);
@@ -187,6 +199,49 @@ void UI_Canvas::draw()
 
 int UI_Canvas::handle(int event)
 {
+	const bool key_down = event == FL_KEYDOWN;
+	const bool key_up   = event == FL_KEYUP;
+	if (key_down || key_up)
+	{
+		const int ekey = Fl::event_key();
+		const bool shift_change   = ekey == FL_Shift_L   || ekey == FL_Shift_R;
+		const bool control_change = ekey == FL_Control_L || ekey == FL_Control_R;
+		if (shift_change || control_change)
+		{
+			if (shift_change)
+			{
+				shift_pressed = key_down;
+			}
+			else if (control_change)
+			{
+				control_pressed = key_down;
+			}
+			
+			// This section assumes that highlight_amount_e consists of consecutive
+			// integers. Similar to the 3D view shift and control cancel each other
+			// out.
+			int highlight_amount_int = static_cast<int>(HIGHLIGHT_Normal);
+			if (shift_pressed)
+			{
+				// Decrease highlighting.
+				highlight_amount_int--;
+			}
+			if (control_pressed)
+			{
+				// Decrease highlighting.
+				highlight_amount_int++;
+			}
+			
+			highlight_amount_e new_highlight_amount =
+				static_cast<highlight_amount_e>(highlight_amount_int);
+			if (new_highlight_amount != highlight_amount)
+			{
+				highlight_amount = new_highlight_amount;
+				redraw();
+			}
+		}
+	}
+
 	if (EV_HandleEvent(event))
 		return 1;
 
@@ -1297,6 +1352,12 @@ void UI_Canvas::UpdateHighlight()
 void UI_Canvas::DrawHighlight(int objtype, int objnum, bool skip_lines,
 							  double dx, double dy)
 {
+	// Do nothing if minimal highlighting.
+	if (highlight_amount == HIGHLIGHT_Min)
+	{
+		return;
+	}
+
 	// color and line thickness have been set by caller
 
 	// fprintf(stderr, "DrawHighlight: %d\n", objnum);
@@ -1410,6 +1471,12 @@ void UI_Canvas::DrawHighlight(int objtype, int objnum, bool skip_lines,
 
 void UI_Canvas::DrawHighlightTransform(int objtype, int objnum)
 {
+	// Do nothing if minimal highlighting.
+	if (highlight_amount == HIGHLIGHT_Min)
+	{
+		return;
+	}
+
 	// color and line thickness have been set by caller
 
 	switch (objtype)
@@ -1503,6 +1570,75 @@ void UI_Canvas::DrawHighlightTransform(int objtype, int objnum)
 }
 
 
+// TODO: Maybe this should be in another file since it doesn't draw anything,
+// but it's not obvious where.
+void UI_Canvas::GetMidpoint(const int objtype, const int objnum, double *midX, double *midY)
+{
+	double minX =  1000000.0;
+	double maxX = -1000000.0;
+	double minY =  1000000.0;
+	double maxY = -1000000.0;
+	
+	if (objtype == OBJ_SECTORS)
+	{
+		for (int n = 0 ; n < NumLineDefs ; n++)
+		{
+			const LineDef *lineDef = LineDefs[n];
+
+			if (!lineDef->TouchesSector(objnum))
+				continue;
+
+			if (lineDef->Start()->x() < minX)
+				minX = lineDef->Start()->x();
+			if (lineDef->Start()->x() > maxX)
+				maxX = lineDef->Start()->x();
+			if (lineDef->Start()->y() < minY)
+				minY = lineDef->Start()->y();
+			if (lineDef->Start()->y() > maxY)
+				maxY = lineDef->Start()->y();
+		}
+	}
+	else if (objtype == OBJ_THINGS)
+	{
+		// There is nothing to calculate for things.
+		minX = maxX = Things[objnum]->x();
+		minY = maxY = Things[objnum]->y();
+	}
+	else if (objtype == OBJ_LINEDEFS)
+	{
+		const LineDef *lineDef = LineDefs[objnum];
+
+		// For linedefs the bounding box is just the vertexes on either end.
+		minX = std::min(lineDef->Start()->x(), lineDef->End()->x());
+		maxX = std::max(lineDef->Start()->x(), lineDef->End()->x());
+		minY = std::min(lineDef->Start()->y(), lineDef->End()->y());
+		maxY = std::max(lineDef->Start()->y(), lineDef->End()->y());
+	}
+
+	// The midpoint in the middlle of the min and max determined.
+	*midX = (minX + maxX) / 2.0;
+	*midY = (minY + maxY) / 2.0;
+}
+
+
+void UI_Canvas::DrawConnection(const int objtypeCause , const int objnumCause,
+							   const int objtypeEffect, const int objnumEffect)
+{
+	// Only do this for maximum highlighting.
+	if (highlight_amount != HIGHLIGHT_Max)
+		return;
+
+	double midCauseX, midCauseY;
+	GetMidpoint(objtypeCause,  objnumCause, &midCauseX, &midCauseY);
+
+	double midEffectX, midEffectY;
+	GetMidpoint(objtypeEffect, objnumEffect, &midEffectX, &midEffectY);
+
+	// TODO: Consider visibility testing prior to drawing this line.
+	DrawMapLine(midCauseX, midCauseY, midEffectX, midEffectY);
+}
+
+
 void UI_Canvas::DrawTagged(int objtype, int objnum)
 {
 	// color has been set by caller
@@ -1512,7 +1648,10 @@ void UI_Canvas::DrawTagged(int objtype, int objnum)
 	{
 		for (int m = 0 ; m < NumSectors ; m++)
 			if (Sectors[m]->tag == LineDefs[objnum]->tag)
+			{
 				DrawHighlight(OBJ_SECTORS, m);
+				DrawConnection(objtype, objnum, OBJ_SECTORS, m);
+			}
 	}
 
 	// handle tagged sectors : show matching line(s)
@@ -1520,7 +1659,10 @@ void UI_Canvas::DrawTagged(int objtype, int objnum)
 	{
 		for (int m = 0 ; m < NumLineDefs ; m++)
 			if (LineDefs[m]->tag == Sectors[objnum]->tag)
+			{
 				DrawHighlight(OBJ_LINEDEFS, m);
+				DrawConnection(objtype, objnum, OBJ_LINEDEFS, m);
+			}
 	}
 }
 
